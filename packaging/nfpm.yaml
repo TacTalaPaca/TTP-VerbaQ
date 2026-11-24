@@ -39,6 +39,28 @@ contents:
     dst: /usr/share/icons/hicolor/256x256/apps/verbaq-dictation.png
   - src: assets/icons/verbaq-512.png
     dst: /usr/share/icons/hicolor/512x512/apps/verbaq-dictation.png
+  - src: assets/sounds/LICENSE-material.txt
+    dst: /usr/share/verbaq/sounds/LICENSE-material.txt
+  - src: assets/sounds/material/start.wav
+    dst: /usr/share/verbaq/sounds/material/start.wav
+  - src: assets/sounds/material/stop.wav
+    dst: /usr/share/verbaq/sounds/material/stop.wav
+  - src: assets/sounds/material/busy.wav
+    dst: /usr/share/verbaq/sounds/material/busy.wav
+  - src: assets/sounds/material/error.wav
+    dst: /usr/share/verbaq/sounds/material/error.wav
+  - src: assets/sounds/material/test.wav
+    dst: /usr/share/verbaq/sounds/material/test.wav
+  - src: assets/sounds/minimal/start.wav
+    dst: /usr/share/verbaq/sounds/minimal/start.wav
+  - src: assets/sounds/minimal/stop.wav
+    dst: /usr/share/verbaq/sounds/minimal/stop.wav
+  - src: assets/sounds/minimal/busy.wav
+    dst: /usr/share/verbaq/sounds/minimal/busy.wav
+  - src: assets/sounds/minimal/error.wav
+    dst: /usr/share/verbaq/sounds/minimal/error.wav
+  - src: assets/sounds/minimal/test.wav
+    dst: /usr/share/verbaq/sounds/minimal/test.wav
   - src: packaging/common/60-verbaq.rules
     dst: /usr/lib/udev/rules.d/60-verbaq.rules
   - src: packaging/common/verbaq-modules.conf

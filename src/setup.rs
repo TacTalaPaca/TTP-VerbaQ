@@ -299,7 +299,42 @@ pub fn run() -> Result<()> {
     println!("   There are no notifications, because desktops hide them too often.");
     cfg.sound = ask_yes("   Play sounds?", true);
     if cfg.sound {
-        feedback::play_now(Cue::Test);
+        println!("   Which sound set?");
+        for (index, (_, label)) in feedback::SETS.iter().enumerate() {
+            println!("     {}. {label}", index + 1);
+        }
+        let answer = ask("   Number [1]: ");
+        let choice = answer.parse::<usize>().unwrap_or(1);
+        cfg.sound_set = if choice >= 1 && choice <= feedback::SETS.len() {
+            feedback::SETS[choice - 1].0.to_string()
+        } else {
+            "material".into()
+        };
+        let outputs = feedback::output_devices();
+        if !outputs.is_empty() {
+            println!("   Where should the sounds play?");
+            println!("     0. System default");
+            for (index, output) in outputs.iter().enumerate() {
+                let name = if output.description.is_empty() {
+                    &output.name
+                } else {
+                    &output.description
+                };
+                println!(
+                    "     {}. {name} ({})",
+                    index + 1,
+                    output.state.to_lowercase()
+                );
+            }
+            let answer = ask("   Number [0]: ");
+            let choice = answer.parse::<usize>().unwrap_or(0);
+            cfg.output = if choice >= 1 && choice <= outputs.len() {
+                outputs[choice - 1].name.clone()
+            } else {
+                String::new()
+            };
+        }
+        feedback::play_now(Cue::Test, cfg.output_option(), &cfg.sound_set);
     }
 
     println!();

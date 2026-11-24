@@ -13,6 +13,8 @@ pub struct Config {
     pub hotkey_codes: Vec<u16>,
     pub hold_to_talk: bool,
     pub sound: bool,
+    pub sound_set: String,
+    pub output: String,
     pub paste_method: String,
     pub history: bool,
     pub history_limit: usize,
@@ -34,6 +36,8 @@ impl Default for Config {
             hotkey_codes: vec![29, 56, 32],
             hold_to_talk: true,
             sound: true,
+            sound_set: "material".into(),
+            output: String::new(),
             paste_method: "shift_insert".into(),
             history: false,
             history_limit: 200,
@@ -88,6 +92,10 @@ impl Config {
             _ => "shift_insert".into(),
         };
         self.threads = self.threads.clamp(1, 32);
+        self.output = self.output.trim().to_string();
+        if !crate::feedback::valid_set(&self.sound_set) {
+            self.sound_set = "material".into();
+        }
         self.history_limit = self.history_limit.clamp(10, 10_000);
         self.paste_restore_ms = self.paste_restore_ms.clamp(100, 2_000);
         self.max_record_secs = self.max_record_secs.clamp(15, 600);
@@ -104,6 +112,14 @@ impl Config {
             None
         } else {
             Some(&self.mic)
+        }
+    }
+
+    pub fn output_option(&self) -> Option<&str> {
+        if self.output.is_empty() {
+            None
+        } else {
+            Some(&self.output)
         }
     }
 }

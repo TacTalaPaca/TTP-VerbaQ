@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.3
+
+- Replaced the generated tones with real sound sets. Material is the default,
+  Minimal is a shorter alternative. Both use Google's Material sound
+  resources under CC BY 4.0.
+- The Sound screen lists the sets, and Left/Right changes the selected one.
+- Every cue file starts with 200 ms of pure silence, then fades in. The
+  daemon waits 20 ms after resuming the output, so the audible cue starts
+  about 270 ms after the shortcut. The silent tone that caused a vibration
+  was removed, and the cue level was lowered.
+- A new cue stops the previous one, so start and stop cannot overlap.
+- The start cue plays before the microphone opens and the stop cue before
+  audio processing, so feedback is not delayed by device setup.
+- Added a sound output setting. The Sound screen lists every audio sink and
+  stores the chosen one in the config. The system default stays available.
+- The daemon resumes a suspended sink before playback and falls back to the
+  system default if the chosen sink is gone.
+- Non-text clipboard content is saved and restored around the paste, so an
+  image or file copy no longer blocks dictation.
+- The settings screen is a two-pane TUI. Tab switches between the section
+  list and the controls, Up/Down moves, Left/Right changes, Enter opens or
+  uses. A cyan border and a Focus label show focus. The mouse wheel,
+  PgUp/PgDn and Home/End scroll, F1 opens the key map, and single-letter
+  shortcuts are gone.
+- The setup wizard offers the sound set and output choice.
+- `verbaq doctor` reports the sound set and a missing sound output.
+
 ## 1.2
 
 - Fixed sound playback. The cue is written as a WAV file and played with

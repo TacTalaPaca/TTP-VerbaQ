@@ -1,6 +1,9 @@
 use anyhow::Result;
 use chrono::TimeZone;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -58,11 +61,19 @@ enum Confirm {
     ClearHistory,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Focus {
+    Sections,
+    Controls,
+}
+
 struct App {
     cfg: Config,
     section: usize,
     devices: Vec<String>,
     device_idx: usize,
+    outputs: Vec<feedback::Output>,
+    output_idx: usize,
     model_idx: usize,
     suggestion_idx: usize,
     meter: Option<audio::Recorder>,
@@ -80,6 +91,8 @@ struct App {
     show_existing: bool,
     show_help: bool,
     body_scroll: usize,
+    row: usize,
+    focus: Focus,
     confirm: Option<Confirm>,
     save_error: Option<String>,
 }
@@ -115,6 +128,12 @@ impl App {
         let cfg = Config::load().unwrap_or_default();
         let devices = audio::input_devices();
         let device_idx = devices.iter().position(|d| d == &cfg.mic).unwrap_or(0);
+        let outputs = feedback::output_devices();
+        let output_idx = outputs
+            .iter()
+            .position(|o| o.name == cfg.output)
+            .map(|index| index + 1)
+            .unwrap_or(0);
         let model_idx = model::MODELS
             .iter()
             .position(|m| m.id == cfg.model)
@@ -128,6 +147,8 @@ impl App {
             section: 0,
             devices,
             device_idx,
+            outputs,
+            output_idx,
             model_idx,
             suggestion_idx,
             meter: None,
@@ -145,6 +166,8 @@ impl App {
             show_existing: false,
             show_help: false,
             body_scroll: 0,
+            row: 0,
+            focus: Focus::Sections,
             confirm: None,
             save_error: None,
         }
@@ -158,6 +181,60 @@ impl App {
 
     fn refresh_existing(&mut self) {
         self.existing = shortcuts::existing();
+    }
+
+    fn selected_output(&self) -> Option<&str> {
+        if self.output_idx == 0 {
+            None
+        } else {
+            self.outputs
+                .get(self.output_idx - 1)
+                .map(|output| output.name.as_str())
+        }
+    }
+
+    fn output_label(&self) -> String {
+        match self.output_idx {
+            0 => "system default".into(),
+            index => self
+                .outputs
+                .get(index - 1)
+                .map(|output| output.description.clone())
+                .unwrap_or_else(|| "system default".into()),
+        }
+    }
+
+    fn output_value(&self) -> String {
+        if self.output_idx == 0 {
+            return "system default".into();
+        }
+        self.outputs
+            .get(self.output_idx - 1)
+            .map(|output| {
+                let name = if output.description.is_empty() {
+                    output.name.clone()
+                } else {
+                    output.description.clone()
+                };
+                if output.state.is_empty() {
+                    name
+                } else {
+                    format!("{name} ({})", output.state.to_lowercase())
+                }
+            })
+            .unwrap_or_else(|| "system default".into())
+    }
+
+    fn move_output(&mut self, forward: bool) {
+        let count = self.outputs.len() + 1;
+        self.output_idx = if forward {
+            (self.output_idx + 1) % count
+        } else {
+            (self.output_idx + count - 1) % count
+        };
+        self.cfg.output = self.selected_output().unwrap_or("").to_string();
+        self.persist();
+        self.message = format!("Sound output: {}.", self.output_label());
     }
 
     fn persist(&mut self) {
@@ -291,13 +368,15 @@ impl App {
     fn on_key(&mut self, code: KeyCode) -> Result<bool> {
         if self.show_help {
             match code {
-                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
+                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') | KeyCode::F(1) => {
                     self.show_help = false;
                 }
                 KeyCode::Down | KeyCode::Char('j') => self.scroll_by(1),
                 KeyCode::Up | KeyCode::Char('k') => self.scroll_by(-1),
                 KeyCode::PageDown => self.scroll_by(10),
                 KeyCode::PageUp => self.scroll_by(-10),
+                KeyCode::Home => self.body_scroll = 0,
+                KeyCode::End => self.body_scroll = usize::MAX,
                 _ => {}
             }
             return Ok(false);
@@ -305,13 +384,15 @@ impl App {
 
         if self.show_existing {
             match code {
-                KeyCode::Esc | KeyCode::Char('e') | KeyCode::Char('q') => {
+                KeyCode::Esc | KeyCode::Char('e') | KeyCode::Char('q') | KeyCode::F(1) => {
                     self.show_existing = false;
                 }
                 KeyCode::Down | KeyCode::Char('j') => self.scroll_by(1),
                 KeyCode::Up | KeyCode::Char('k') => self.scroll_by(-1),
                 KeyCode::PageDown => self.scroll_by(10),
                 KeyCode::PageUp => self.scroll_by(-10),
+                KeyCode::Home => self.body_scroll = 0,
+                KeyCode::End => self.body_scroll = usize::MAX,
                 _ => {}
             }
             return Ok(false);
@@ -329,16 +410,38 @@ impl App {
             return Ok(false);
         }
 
+        if self.pending_confirm.is_some() {
+            match code {
+                KeyCode::Enter => self.activate(),
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.pending_confirm = None;
+                    self.message = "Custom shortcut discarded.".into();
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
+
         match code {
-            KeyCode::Char('?') => {
+            KeyCode::F(1) | KeyCode::Char('?') => {
                 self.show_help = true;
                 self.body_scroll = 0;
+                self.message.clear();
             }
             KeyCode::PageDown => self.scroll_by(10),
             KeyCode::PageUp => self.scroll_by(-10),
+            KeyCode::Home => self.body_scroll = 0,
+            KeyCode::End => self.body_scroll = usize::MAX,
             KeyCode::Esc => {
-                self.stop_meter();
-                return Ok(true);
+                if self.pending_confirm.is_some() {
+                    self.pending_confirm = None;
+                    self.message = "Custom shortcut discarded.".into();
+                } else if self.focus == Focus::Controls {
+                    self.focus = Focus::Sections;
+                    self.message.clear();
+                } else {
+                    self.stop_meter();
+                }
             }
             KeyCode::Char('q') => {
                 if self.pending_confirm.is_some() {
@@ -349,25 +452,81 @@ impl App {
                     return Ok(true);
                 }
             }
-            KeyCode::Tab | KeyCode::Down => {
+            KeyCode::Tab | KeyCode::BackTab => {
                 self.pending_confirm = None;
-                self.stop_meter();
-                self.section = (self.section + 1) % SECTIONS.len();
-                self.after_section_change();
+                self.focus = if self.focus == Focus::Sections {
+                    Focus::Controls
+                } else {
+                    Focus::Sections
+                };
+                self.message.clear();
             }
-            KeyCode::BackTab | KeyCode::Up => {
-                self.pending_confirm = None;
-                self.stop_meter();
-                self.section = (self.section + SECTIONS.len() - 1) % SECTIONS.len();
-                self.after_section_change();
+            KeyCode::Up => {
+                if self.focus == Focus::Sections {
+                    self.move_section(false);
+                } else {
+                    self.move_row(false);
+                }
             }
-            _ => self.section_key(code)?,
+            KeyCode::Down => {
+                if self.focus == Focus::Sections {
+                    self.move_section(true);
+                } else {
+                    self.move_row(true);
+                }
+            }
+            KeyCode::Left => {
+                if self.focus == Focus::Controls {
+                    self.adjust(-1);
+                }
+            }
+            KeyCode::Right => {
+                if self.focus == Focus::Sections {
+                    self.focus = Focus::Controls;
+                    self.message.clear();
+                } else {
+                    self.adjust(1);
+                }
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                if self.focus == Focus::Sections {
+                    self.focus = Focus::Controls;
+                    self.message.clear();
+                } else {
+                    self.activate();
+                }
+            }
+            KeyCode::Char(ch) => {
+                if let Some(digit) = ch.to_digit(10) {
+                    if digit >= 1 && digit as usize <= SECTIONS.len() {
+                        self.pending_confirm = None;
+                        self.stop_meter();
+                        self.section = digit as usize - 1;
+                        self.after_section_change();
+                        self.focus = Focus::Controls;
+                    }
+                }
+            }
+            _ => {}
         }
         Ok(false)
     }
 
+    fn move_section(&mut self, down: bool) {
+        self.pending_confirm = None;
+        self.stop_meter();
+        self.section = if down {
+            (self.section + 1) % SECTIONS.len()
+        } else {
+            (self.section + SECTIONS.len() - 1) % SECTIONS.len()
+        };
+        self.after_section_change();
+    }
+
     fn after_section_change(&mut self) {
         self.body_scroll = 0;
+        self.row = 0;
+        self.message.clear();
         if self.section == 1 {
             self.devices = audio::input_devices();
             if self.device_idx >= self.devices.len() {
@@ -380,6 +539,165 @@ impl App {
         }
         if self.section == 6 {
             self.history = load_history();
+        }
+    }
+
+    fn rows(&self) -> usize {
+        match self.section {
+            0 => 4,
+            1 => 3,
+            2 => 3,
+            3 => 5,
+            4 => 4,
+            5 => 2,
+            6 => 3,
+            7 => 1,
+            _ => 0,
+        }
+    }
+
+    fn move_row(&mut self, down: bool) {
+        let count = self.rows();
+        if count == 0 {
+            return;
+        }
+        self.row = if down {
+            (self.row + 1) % count
+        } else {
+            (self.row + count - 1) % count
+        };
+    }
+
+    fn control_row(&self, index: usize, label: &str, value: &str) -> Line<'static> {
+        let active = index == self.row;
+        let marker = if active { ">" } else { " " };
+        let text = if value.is_empty() {
+            format!("{marker} {label}")
+        } else {
+            format!("{marker} {label:<22}{value}")
+        };
+        if active {
+            let color = if self.focus == Focus::Controls {
+                Color::Cyan
+            } else {
+                Color::Gray
+            };
+            Line::from(Span::styled(
+                text,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ))
+        } else {
+            plain(text)
+        }
+    }
+
+    fn controls(&self) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        match self.section {
+            0 => {
+                lines.push(self.control_row(0, "Start service", ""));
+                lines.push(self.control_row(1, "Stop service", ""));
+                lines.push(self.control_row(
+                    2,
+                    "Start at login",
+                    if service::autostart_enabled() {
+                        "on"
+                    } else {
+                        "off"
+                    },
+                ));
+                lines.push(self.control_row(3, "Refresh status", ""));
+            }
+            1 => {
+                let device = if self.cfg.mic.is_empty() {
+                    "system default".to_string()
+                } else {
+                    self.cfg.mic.clone()
+                };
+                lines.push(self.control_row(0, "Microphone", &device));
+                lines.push(self.control_row(
+                    1,
+                    "Level meter",
+                    if self.meter.is_some() {
+                        "running"
+                    } else {
+                        "stopped"
+                    },
+                ));
+                lines.push(self.control_row(2, "Test 3 seconds", ""));
+            }
+            2 => {
+                let spec = &model::MODELS[self.model_idx];
+                let state = if model::is_installed(spec) {
+                    "installed"
+                } else {
+                    "not installed"
+                };
+                lines.push(self.control_row(0, "Model", &format!("{} ({state})", spec.label)));
+                lines.push(self.control_row(1, "Install or select", ""));
+                lines.push(self.control_row(2, "Delete model", ""));
+            }
+            3 => {
+                let suggestion = &shortcuts::SUGGESTIONS[self.suggestion_idx];
+                lines.push(self.control_row(0, "Suggestion", suggestion.display));
+                lines.push(self.control_row(
+                    1,
+                    "Mode",
+                    if self.cfg.hold_to_talk {
+                        "hold to talk"
+                    } else {
+                        "press to start and stop"
+                    },
+                ));
+                lines.push(self.control_row(2, "Record custom", ""));
+                lines.push(self.control_row(3, "List shortcuts", ""));
+                lines.push(self.control_row(4, "Clear shortcut", ""));
+            }
+            4 => {
+                lines.push(self.control_row(
+                    0,
+                    "Sounds",
+                    if self.cfg.sound { "on" } else { "off" },
+                ));
+                lines.push(self.control_row(
+                    1,
+                    "Sound set",
+                    feedback::set_label(&self.cfg.sound_set),
+                ));
+                lines.push(self.control_row(2, "Output", &self.output_value()));
+                lines.push(self.control_row(3, "Play test", ""));
+            }
+            5 => {
+                lines.push(self.control_row(0, "Method", &insert_title(&self.cfg)));
+                lines.push(self.control_row(1, "Check clipboard and typing", ""));
+            }
+            6 => {
+                lines.push(self.control_row(
+                    0,
+                    "Keep history",
+                    if self.cfg.history { "on" } else { "off" },
+                ));
+                lines.push(self.control_row(1, "Clear history", ""));
+                lines.push(self.control_row(2, "Reload", ""));
+            }
+            7 => {
+                lines.push(self.control_row(0, "Run health check", ""));
+            }
+            _ => {}
+        }
+        lines
+    }
+
+    fn summary(&self) -> &'static str {
+        match self.section {
+            0 => "The background service waits for the shortcut.",
+            1 => "Choose the device that hears you.",
+            2 => "Choose the speech model.",
+            3 => "Choose the key that starts dictation.",
+            4 => "Sound is the only feedback.",
+            5 => "Choose how the text reaches the other application.",
+            6 => "Keep a local copy of your transcripts.",
+            _ => "Check every piece VerbaQ needs.",
         }
     }
 
@@ -405,264 +723,311 @@ impl App {
         }
     }
 
-    fn section_key(&mut self, code: KeyCode) -> Result<()> {
-        if self.section == 7 && code == KeyCode::Enter {
-            self.health = doctor::run(false)
-                .into_iter()
-                .map(|check| (check.ok, check.label, check.detail))
-                .collect();
-            self.message = "Health check done.".into();
-            return Ok(());
+    fn adjust(&mut self, direction: i32) {
+        if self.section == 3 && self.pending_confirm.is_some() {
+            return;
         }
-
-        match self.section {
-            0 => match code {
-                KeyCode::Char('s') => match service::start() {
-                    Ok(message) => {
-                        self.running = ipc::is_running();
-                        self.message = message;
-                    }
-                    Err(err) => self.message = format!("Could not start: {err:#}"),
-                },
-                KeyCode::Char('x') => match service::stop() {
-                    Ok(message) => {
-                        self.running = ipc::is_running();
-                        self.message = message;
-                    }
-                    Err(err) => self.message = format!("Could not stop: {err:#}"),
-                },
-                KeyCode::Char('a') => {
-                    if service::autostart_enabled() {
-                        service::autostart_disable();
-                        self.message =
-                            "Start at login is off. The autostart file was removed.".into();
-                    } else {
-                        match service::autostart_enable() {
-                            Ok(()) => self.message =
-                                "Start at login is on. One file was added in ~/.config/autostart."
-                                    .into(),
-                            Err(err) => self.message = format!("Could not enable: {err:#}"),
-                        }
-                    }
-                }
-                KeyCode::Enter => {
-                    self.running = ipc::is_running();
-                    if self.running {
-                        self.status_text = ipc::send("status").unwrap_or_default();
-                    } else {
-                        self.status_text.clear();
-                    }
-                    self.message = "Status refreshed.".into();
-                }
-                _ => {}
-            },
-            1 => match code {
-                KeyCode::Left | KeyCode::Right => {
-                    if !self.devices.is_empty() {
-                        if code == KeyCode::Right {
-                            self.device_idx = (self.device_idx + 1) % self.devices.len();
-                        } else {
-                            self.device_idx =
-                                (self.device_idx + self.devices.len() - 1) % self.devices.len();
-                        }
-                        self.cfg.mic = self.devices[self.device_idx].clone();
-                        self.persist();
-                        if self.meter.is_some() {
-                            self.stop_meter();
-                            self.meter = audio::Recorder::start_meter(self.cfg.mic_option()).ok();
-                        }
-                    }
-                }
-                KeyCode::Enter => {
-                    if self.meter.is_some() {
-                        self.stop_meter();
-                        self.message = "Level meter stopped.".into();
-                    } else {
-                        match audio::Recorder::start_meter(self.cfg.mic_option()) {
-                            Ok(rec) => {
-                                self.meter = Some(rec);
-                                self.message =
-                                    "Speak and watch the bar. Enter stops the meter.".into();
-                            }
-                            Err(err) => self.message = format!("Microphone error: {err}"),
-                        }
-                    }
-                }
-                KeyCode::Char('t') => self.message = self.test_microphone(),
-                _ => {}
-            },
-            2 => {
-                let spec = &model::MODELS[self.model_idx];
-                match code {
-                    KeyCode::Left | KeyCode::Right => {
-                        self.model_idx = (self.model_idx + 1) % model::MODELS.len();
-                        self.message = model::MODELS[self.model_idx].note.into();
-                    }
-                    KeyCode::Enter => {
-                        if model::is_installed(spec) {
-                            self.cfg.model = spec.id.to_string();
-                            self.persist();
-                            self.message =
-                                format!("{} selected. Used on the next recording.", spec.label);
-                        } else if self.download.is_none() {
-                            self.start_download(spec);
-                        } else {
-                            self.message = "A download is already running.".into();
-                        }
-                    }
-                    KeyCode::Char('d') => {
-                        if self.download.is_some() {
-                            self.message = "Wait for the download to finish.".into();
-                        } else if model::is_installed(spec) {
-                            self.confirm = Some(Confirm::DeleteModel(spec));
-                            self.message = format!(
-                                "Press Enter to delete {} ({}). Esc cancels.",
-                                spec.label,
-                                util::human_size(spec.size)
-                            );
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            3 => {
-                if let Some((label, codes)) = self.pending_confirm.clone() {
-                    match code {
-                        KeyCode::Enter => self.apply_shortcut(&codes, &label),
-                        KeyCode::Esc => {
-                            self.pending_confirm = None;
-                            self.message = "Custom shortcut discarded.".into();
-                        }
-                        _ => {}
-                    }
-                    return Ok(());
-                }
-                match code {
-                    KeyCode::Left | KeyCode::Right => {
-                        self.suggestion_idx = if code == KeyCode::Right {
-                            (self.suggestion_idx + 1) % shortcuts::SUGGESTIONS.len()
-                        } else {
-                            (self.suggestion_idx + shortcuts::SUGGESTIONS.len() - 1)
-                                % shortcuts::SUGGESTIONS.len()
-                        };
-                    }
-                    KeyCode::Enter => {
-                        let suggestion = &shortcuts::SUGGESTIONS[self.suggestion_idx];
-                        self.apply_shortcut(suggestion.codes, suggestion.display);
-                    }
-                    KeyCode::Char('c') => {
-                        if self.keyboard_permission {
-                            self.capture_requested = true;
-                            self.message = "Press the combination. Include Ctrl, Alt or Super. Names follow the US layout.".into();
-                        } else {
-                            self.message =
-                                "Cannot read keys. Install the package, log out and back in, or pick a suggestion.".into();
-                        }
-                    }
-                    KeyCode::Char('e') => {
-                        self.refresh_existing();
-                        self.show_existing = true;
-                        self.body_scroll = 0;
-                    }
-                    KeyCode::Char('h') => {
-                        self.cfg.hold_to_talk = !self.cfg.hold_to_talk;
-                        self.persist();
-                        self.message = format!(
-                            "Mode: {}. Applies within 2 seconds.",
-                            if self.cfg.hold_to_talk {
-                                "hold to talk"
-                            } else {
-                                "press to start, press to stop"
-                            }
-                        );
-                    }
-                    KeyCode::Char('x') => {
-                        self.cfg.hotkey_codes.clear();
-                        self.cfg.hotkey = "unset".into();
-                        self.persist();
-                        self.message = "Shortcut cleared. Bind `verbaq toggle` in your desktop or pick a suggestion.".into();
-                    }
-                    other => {
-                        if let KeyCode::Char(ch) = other {
-                            if let Some(digit) = ch.to_digit(10) {
-                                let index = digit as usize;
-                                if index >= 1 && index <= shortcuts::SUGGESTIONS.len() {
-                                    let suggestion = &shortcuts::SUGGESTIONS[index - 1];
-                                    self.suggestion_idx = index - 1;
-                                    self.apply_shortcut(suggestion.codes, suggestion.display);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            4 => match code {
-                KeyCode::Char('s') => {
-                    self.cfg.sound = !self.cfg.sound;
-                    self.persist();
-                    self.message = format!("Sounds {}.", on_off(self.cfg.sound));
-                }
-                KeyCode::Char('t') => {
-                    if self.cfg.sound {
-                        feedback::play_async(Cue::Test);
-                        self.message = "Test sound played.".into();
-                    } else {
-                        self.message = "Sounds are off. Press s to turn them on.".into();
-                    }
-                }
-                _ => {}
-            },
-            5 => match code {
-                KeyCode::Char('p') => {
-                    self.cfg.paste_method = if self.cfg.paste_method == "ctrl_v" {
-                        "shift_insert".into()
-                    } else {
-                        "ctrl_v".into()
-                    };
-                    self.persist();
-                    self.message = format!("Insert method: {}.", insert_label(&self.cfg));
-                }
-                KeyCode::Enter => {
-                    let uinput = std::fs::OpenOptions::new()
-                        .write(true)
-                        .open("/dev/uinput")
-                        .is_ok();
-                    if inject::copy_only("VerbaQ insert test: the clipboard works.") {
-                        self.message = if uinput {
-                            "Clipboard and typing look ready. Test text is on the clipboard.".into()
-                        } else {
-                            "Clipboard works, but /dev/uinput is not writable. Text can only be copied.".into()
-                        };
-                    } else {
-                        self.message = "Could not write to the clipboard.".into();
-                    }
-                }
-                _ => {}
-            },
-            6 => match code {
-                KeyCode::Char('h') => {
-                    self.cfg.history = !self.cfg.history;
-                    self.persist();
-                    self.message = format!("Transcript history {}.", on_off(self.cfg.history));
-                }
-                KeyCode::Char('c') => {
-                    if self.history.is_empty() && !util::history_path().exists() {
-                        self.message = "History is already empty.".into();
-                    } else {
-                        self.confirm = Some(Confirm::ClearHistory);
-                        self.message = "Press Enter to clear all history. Esc cancels.".into();
-                    }
-                }
-                KeyCode::Char('r') => {
-                    self.history = load_history();
-                    self.message = "History reloaded.".into();
-                }
-                _ => {}
-            },
-            7 => {}
+        match (self.section, self.row) {
+            (0, 2) => self.toggle_autostart(),
+            (1, 0) => self.cycle_microphone(direction),
+            (2, 0) => self.cycle_model(direction),
+            (3, 0) => self.cycle_suggestion(direction),
+            (3, 1) => self.toggle_mode(),
+            (4, 0) => self.toggle_sound(),
+            (4, 1) => self.cycle_set(direction),
+            (4, 2) => self.move_output(direction > 0),
+            (5, 0) => self.toggle_paste(),
+            (6, 0) => self.toggle_history(),
             _ => {}
         }
-        Ok(())
+    }
+
+    fn activate(&mut self) {
+        if let Some((label, codes)) = self.pending_confirm.clone() {
+            self.apply_shortcut(&codes, &label);
+            return;
+        }
+        match (self.section, self.row) {
+            (0, 0) => self.start_service(),
+            (0, 1) => self.stop_service(),
+            (0, 2) => self.toggle_autostart(),
+            (0, 3) => self.refresh_status(),
+            (1, 0) => self.cycle_microphone(1),
+            (1, 1) => self.toggle_meter(),
+            (1, 2) => self.message = self.test_microphone(),
+            (2, 0) => self.cycle_model(1),
+            (2, 1) => self.select_or_download_model(),
+            (2, 2) => self.delete_model(),
+            (3, 0) => {
+                let suggestion = &shortcuts::SUGGESTIONS[self.suggestion_idx];
+                self.apply_shortcut(suggestion.codes, suggestion.display);
+            }
+            (3, 1) => self.toggle_mode(),
+            (3, 2) => self.start_capture(),
+            (3, 3) => {
+                self.refresh_existing();
+                self.show_existing = true;
+                self.body_scroll = 0;
+            }
+            (3, 4) => self.clear_shortcut(),
+            (4, 0) => self.toggle_sound(),
+            (4, 1) => self.cycle_set(1),
+            (4, 2) => self.move_output(true),
+            (4, 3) => self.play_test(),
+            (5, 0) => self.toggle_paste(),
+            (5, 1) => self.check_insertion(),
+            (6, 0) => self.toggle_history(),
+            (6, 1) => self.clear_history(),
+            (6, 2) => self.reload_history(),
+            (7, 0) => self.run_health(),
+            _ => {}
+        }
+    }
+
+    fn start_service(&mut self) {
+        match service::start() {
+            Ok(message) => {
+                self.running = ipc::is_running();
+                self.message = message;
+            }
+            Err(err) => self.message = format!("Could not start: {err:#}"),
+        }
+    }
+
+    fn stop_service(&mut self) {
+        match service::stop() {
+            Ok(message) => {
+                self.running = ipc::is_running();
+                self.message = message;
+            }
+            Err(err) => self.message = format!("Could not stop: {err:#}"),
+        }
+    }
+
+    fn toggle_autostart(&mut self) {
+        if service::autostart_enabled() {
+            service::autostart_disable();
+            self.message = "Start at login is off. The autostart file was removed.".into();
+        } else {
+            match service::autostart_enable() {
+                Ok(()) => {
+                    self.message =
+                        "Start at login is on. One file was added in ~/.config/autostart.".into()
+                }
+                Err(err) => self.message = format!("Could not enable: {err:#}"),
+            }
+        }
+    }
+
+    fn refresh_status(&mut self) {
+        self.running = ipc::is_running();
+        if self.running {
+            self.status_text = ipc::send("status").unwrap_or_default();
+        } else {
+            self.status_text.clear();
+        }
+        self.message = "Status refreshed.".into();
+    }
+
+    fn cycle_microphone(&mut self, direction: i32) {
+        if self.devices.is_empty() {
+            return;
+        }
+        let count = self.devices.len();
+        self.device_idx = if direction > 0 {
+            (self.device_idx + 1) % count
+        } else {
+            (self.device_idx + count - 1) % count
+        };
+        self.cfg.mic = self.devices[self.device_idx].clone();
+        self.persist();
+        if self.meter.is_some() {
+            self.stop_meter();
+            self.meter = audio::Recorder::start_meter(self.cfg.mic_option()).ok();
+        }
+    }
+
+    fn toggle_meter(&mut self) {
+        if self.meter.is_some() {
+            self.stop_meter();
+            self.message = "Level meter stopped.".into();
+        } else {
+            match audio::Recorder::start_meter(self.cfg.mic_option()) {
+                Ok(rec) => {
+                    self.meter = Some(rec);
+                    self.message = "Speak and watch the bar. Enter stops the meter.".into();
+                }
+                Err(err) => self.message = format!("Microphone error: {err}"),
+            }
+        }
+    }
+
+    fn cycle_model(&mut self, direction: i32) {
+        let count = model::MODELS.len();
+        self.model_idx = if direction > 0 {
+            (self.model_idx + 1) % count
+        } else {
+            (self.model_idx + count - 1) % count
+        };
+        self.message = model::MODELS[self.model_idx].note.into();
+    }
+
+    fn select_or_download_model(&mut self) {
+        let spec = &model::MODELS[self.model_idx];
+        if model::is_installed(spec) {
+            self.cfg.model = spec.id.to_string();
+            self.persist();
+            self.message = format!("{} selected. Used on the next recording.", spec.label);
+        } else if self.download.is_none() {
+            self.start_download(spec);
+        } else {
+            self.message = "A download is already running.".into();
+        }
+    }
+
+    fn delete_model(&mut self) {
+        let spec = &model::MODELS[self.model_idx];
+        if self.download.is_some() {
+            self.message = "Wait for the download to finish.".into();
+        } else if model::is_installed(spec) {
+            self.confirm = Some(Confirm::DeleteModel(spec));
+            self.message = format!(
+                "Press Enter to delete {} ({}). Esc cancels.",
+                spec.label,
+                util::human_size(spec.size)
+            );
+        } else {
+            self.message = format!("{} is not installed.", spec.label);
+        }
+    }
+
+    fn cycle_suggestion(&mut self, direction: i32) {
+        let count = shortcuts::SUGGESTIONS.len();
+        self.suggestion_idx = if direction > 0 {
+            (self.suggestion_idx + 1) % count
+        } else {
+            (self.suggestion_idx + count - 1) % count
+        };
+    }
+
+    fn toggle_mode(&mut self) {
+        self.cfg.hold_to_talk = !self.cfg.hold_to_talk;
+        self.persist();
+        self.message = format!(
+            "Mode: {}. Applies within 2 seconds.",
+            if self.cfg.hold_to_talk {
+                "hold to talk"
+            } else {
+                "press to start, press to stop"
+            }
+        );
+    }
+
+    fn start_capture(&mut self) {
+        if self.keyboard_permission {
+            self.capture_requested = true;
+            self.message =
+                "Press the combination. Include Ctrl, Alt or Super. Names follow the US layout."
+                    .into();
+        } else {
+            self.message =
+                "Cannot read keys. Install the package, log out and back in, or pick a suggestion."
+                    .into();
+        }
+    }
+
+    fn clear_shortcut(&mut self) {
+        self.cfg.hotkey_codes.clear();
+        self.cfg.hotkey = "unset".into();
+        self.persist();
+        self.message =
+            "Shortcut cleared. Bind `verbaq toggle` in your desktop or pick a suggestion.".into();
+    }
+
+    fn toggle_sound(&mut self) {
+        self.cfg.sound = !self.cfg.sound;
+        self.persist();
+        self.message = format!("Sounds {}.", on_off(self.cfg.sound));
+    }
+
+    fn cycle_set(&mut self, direction: i32) {
+        let sets = feedback::SETS;
+        let current = sets
+            .iter()
+            .position(|(id, _)| *id == self.cfg.sound_set)
+            .unwrap_or(0);
+        let next = if direction > 0 {
+            (current + 1) % sets.len()
+        } else {
+            (current + sets.len() - 1) % sets.len()
+        };
+        self.cfg.sound_set = sets[next].0.to_string();
+        self.persist();
+        self.message = format!("Sound set: {}.", feedback::set_label(&self.cfg.sound_set));
+    }
+
+    fn play_test(&mut self) {
+        if self.cfg.sound {
+            let device = self.selected_output().map(str::to_string);
+            feedback::play_async(Cue::Test, device.as_deref(), &self.cfg.sound_set);
+            self.message = "Test sound played.".into();
+        } else {
+            self.message = "Sounds are off. Turn them on first.".into();
+        }
+    }
+
+    fn toggle_paste(&mut self) {
+        self.cfg.paste_method = if self.cfg.paste_method == "ctrl_v" {
+            "shift_insert".into()
+        } else {
+            "ctrl_v".into()
+        };
+        self.persist();
+        self.message = format!("Insert method: {}.", insert_label(&self.cfg));
+    }
+
+    fn check_insertion(&mut self) {
+        let uinput = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/uinput")
+            .is_ok();
+        if inject::copy_only("VerbaQ insert test: the clipboard works.") {
+            self.message = if uinput {
+                "Clipboard and typing look ready. Test text is on the clipboard.".into()
+            } else {
+                "Clipboard works, but /dev/uinput is not writable. Text can only be copied.".into()
+            };
+        } else {
+            self.message = "Could not write to the clipboard.".into();
+        }
+    }
+
+    fn toggle_history(&mut self) {
+        self.cfg.history = !self.cfg.history;
+        self.persist();
+        self.message = format!("Transcript history {}.", on_off(self.cfg.history));
+    }
+
+    fn clear_history(&mut self) {
+        if self.history.is_empty() && !util::history_path().exists() {
+            self.message = "History is already empty.".into();
+        } else {
+            self.confirm = Some(Confirm::ClearHistory);
+            self.message = "Press Enter to clear all history. Esc cancels.".into();
+        }
+    }
+
+    fn reload_history(&mut self) {
+        self.history = load_history();
+        self.message = "History reloaded.".into();
+    }
+
+    fn run_health(&mut self) {
+        self.health = doctor::run(false)
+            .into_iter()
+            .map(|check| (check.ok, check.label, check.detail))
+            .collect();
+        self.message = "Health check done.".into();
     }
 
     fn test_microphone(&mut self) -> String {
@@ -688,9 +1053,7 @@ impl App {
         match result {
             Ok(codes) => {
                 let label = hotkey::combo_label(&codes);
-                self.message = format!(
-                    "Detected {label}. Enter uses it, Esc discards it. Press c to try again."
-                );
+                self.message = format!("Detected {label}. Enter uses it, Esc discards it.");
                 self.pending_confirm = Some((label, codes));
             }
             Err(err) => {
@@ -705,24 +1068,16 @@ impl App {
 
     fn context_help(&self) -> String {
         if self.show_help {
-            return "PgUp/PgDn scroll   Esc or ? close".into();
+            return "Up/Down or wheel scroll   F1 or Esc close".into();
         }
         if self.show_existing {
-            return "Up/Down or j/k scroll   Esc or e back".into();
+            return "Up/Down or wheel scroll   Esc back".into();
         }
         if self.confirm.is_some() {
             return "Enter confirm   Esc cancel".into();
         }
-        match self.section {
-            0 => "s start   x stop   a start at login   Enter refresh".into(),
-            1 => "Left/Right device   Enter level meter   t 3 second test".into(),
-            2 => "Left/Right model   Enter select or download   d delete".into(),
-            3 => "Left/Right suggestion   Enter choose   c custom   e list   h mode".into(),
-            4 => "s sounds on/off   t test".into(),
-            5 => "p switch method   Enter check clipboard and typing".into(),
-            6 => "h history on/off   c clear   r reload".into(),
-            _ => "Enter run the health check".into(),
-        }
+        "Tab pane   Up/Down move   Left/Right change   Enter select   PgUp/PgDn or wheel scroll   F1 help   q quit"
+            .into()
     }
 
     fn draw(&self, frame: &mut ratatui::Frame) {
@@ -731,7 +1086,7 @@ impl App {
             .constraints([
                 Constraint::Length(3),
                 Constraint::Min(6),
-                Constraint::Length(4),
+                Constraint::Length(5),
             ])
             .split(frame.area());
 
@@ -774,6 +1129,13 @@ impl App {
             Span::raw("   "),
             Span::styled("Mode ", Style::default().fg(Color::DarkGray)),
             Span::raw(mode),
+            Span::raw("   "),
+            Span::styled("Focus ", Style::default().fg(Color::DarkGray)),
+            Span::raw(if self.focus == Focus::Sections {
+                "sections"
+            } else {
+                "controls"
+            }),
         ]);
         frame.render_widget(
             Paragraph::new(header).block(
@@ -787,84 +1149,177 @@ impl App {
 
         let columns = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(20), Constraint::Min(40)])
+            .constraints([Constraint::Length(24), Constraint::Min(40)])
             .split(chunks[1]);
 
+        let sections_focused = self.focus == Focus::Sections
+            && !self.show_help
+            && !self.show_existing
+            && self.confirm.is_none();
+        let sections_color = if sections_focused {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        };
+        let sections_block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(sections_color))
+            .title(Span::styled(
+                " Sections ",
+                Style::default().fg(sections_color),
+            ));
+        let sections_inner = sections_block.inner(columns[0]);
+        frame.render_widget(sections_block, columns[0]);
+
+        let visible_sections = sections_inner.height as usize;
+        let offset = if visible_sections == 0 || self.section < visible_sections {
+            0
+        } else {
+            self.section + 1 - visible_sections
+        };
         let menu: Vec<Line> = SECTIONS
             .iter()
             .enumerate()
+            .skip(offset)
+            .take(visible_sections.max(1))
             .map(|(index, name)| {
-                if index == self.section {
+                let current = index == self.section;
+                let marker = if current { ">" } else { " " };
+                let text = format!("{marker} {}. {name}", index + 1);
+                if current {
                     Line::from(Span::styled(
-                        format!("> {name}"),
+                        text,
                         Style::default()
-                            .fg(Color::Cyan)
+                            .fg(if sections_focused {
+                                Color::Cyan
+                            } else {
+                                Color::Gray
+                            })
                             .add_modifier(Modifier::BOLD),
                     ))
                 } else {
-                    Line::from(format!("  {name}"))
+                    plain(text)
                 }
             })
             .collect();
-        frame.render_widget(
-            Paragraph::new(menu).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .title(" Sections "),
-            ),
-            columns[0],
-        );
+        frame.render_widget(Paragraph::new(menu), sections_inner);
 
+        let controls_focused = self.focus == Focus::Controls
+            && !self.show_help
+            && !self.show_existing
+            && self.confirm.is_none();
         let title = if self.show_help {
             " Help ".to_string()
         } else if self.show_existing {
             " Shortcuts on this system ".to_string()
         } else if self.confirm.is_some() {
-            " Confirm action ".to_string()
+            " Confirm ".to_string()
         } else {
             format!(" {} ", SECTIONS[self.section])
         };
-        let mut lines = if self.show_help {
-            help_body()
-        } else {
-            self.body()
-        };
-        if let Some(action) = self.confirm {
-            let mut warning = vec![
-                Line::from(Span::styled(
-                    confirmation_text(action),
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                )),
-                Line::from(""),
-            ];
-            warning.extend(lines);
-            lines = warning;
-        }
-
-        let block = Block::default()
+        let right_block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .title(title);
-        let inner = block.inner(columns[1]);
-        let visible = inner.height as usize;
-        let maximum = lines.len().saturating_sub(visible);
-        let start = self.body_scroll.min(maximum);
-        let view: Vec<Line> = lines.iter().skip(start).take(visible).cloned().collect();
-        frame.render_widget(
-            Paragraph::new(view).block(block).wrap(Wrap { trim: false }),
-            columns[1],
-        );
-        if visible > 0 && lines.len() > visible {
-            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .begin_symbol(None)
-                .end_symbol(None);
-            let mut scroll_state = ScrollbarState::new(lines.len())
-                .position(start)
-                .viewport_content_length(visible);
-            frame.render_stateful_widget(scrollbar, inner, &mut scroll_state);
+            .border_style(Style::default().fg(Color::DarkGray))
+            .title(Span::styled(title, Style::default().fg(Color::Gray)));
+        let inner = right_block.inner(columns[1]);
+        frame.render_widget(right_block, columns[1]);
+
+        if self.show_help || self.show_existing || self.confirm.is_some() {
+            let mut lines = if self.show_help {
+                help_body()
+            } else {
+                self.body()
+            };
+            if let Some(action) = self.confirm {
+                let mut warning = vec![
+                    Line::from(Span::styled(
+                        confirmation_text(action),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    )),
+                    Line::from(""),
+                ];
+                warning.extend(lines);
+                lines = warning;
+            }
+            let visible = inner.height as usize;
+            let maximum = lines.len().saturating_sub(visible);
+            let start = self.body_scroll.min(maximum);
+            let view: Vec<Line> = lines.iter().skip(start).take(visible).cloned().collect();
+            frame.render_widget(Paragraph::new(view).wrap(Wrap { trim: false }), inner);
+            if visible > 0 && lines.len() > visible {
+                let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                    .begin_symbol(None)
+                    .end_symbol(None);
+                let mut scroll_state = ScrollbarState::new(lines.len())
+                    .position(start)
+                    .viewport_content_length(visible);
+                frame.render_stateful_widget(scrollbar, inner, &mut scroll_state);
+            }
+        } else {
+            let summary_height = if inner.height >= 6 { 1 } else { 0 };
+            let controls = self.controls();
+            let controls_height =
+                (controls.len() as u16 + 2).min(inner.height.saturating_sub(summary_height));
+            let details_height = inner
+                .height
+                .saturating_sub(summary_height + controls_height);
+            let layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(summary_height),
+                    Constraint::Length(controls_height),
+                    Constraint::Length(details_height),
+                ])
+                .split(inner);
+
+            if summary_height > 0 {
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        self.summary(),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ))),
+                    layout[0],
+                );
+            }
+
+            let controls_color = if controls_focused {
+                Color::Cyan
+            } else {
+                Color::DarkGray
+            };
+            let controls_block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(controls_color))
+                .title(Span::styled(
+                    " Controls ",
+                    Style::default().fg(controls_color),
+                ));
+            let controls_visible = controls_block.inner(layout[1]).height as usize;
+            let rows: Vec<Line> = controls.into_iter().take(controls_visible).collect();
+            frame.render_widget(Paragraph::new(rows).block(controls_block), layout[1]);
+
+            if details_height > 0 {
+                let details = self.body();
+                let visible = details_height as usize;
+                let maximum = details.len().saturating_sub(visible);
+                let start = self.body_scroll.min(maximum);
+                let view: Vec<Line> = details.iter().skip(start).take(visible).cloned().collect();
+                frame.render_widget(Paragraph::new(view).wrap(Wrap { trim: false }), layout[2]);
+                if details.len() > visible {
+                    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                        .begin_symbol(None)
+                        .end_symbol(None);
+                    let mut scroll_state = ScrollbarState::new(details.len())
+                        .position(start)
+                        .viewport_content_length(visible);
+                    frame.render_stateful_widget(scrollbar, layout[2], &mut scroll_state);
+                }
+            }
         }
 
         let primary = if let Some(error) = &self.save_error {
@@ -872,24 +1327,52 @@ impl App {
                 format!("Could not save settings: {error}"),
                 Style::default().fg(Color::Red),
             ))
-        } else if self.message.is_empty() {
-            Line::from(self.context_help())
-        } else {
+        } else if !self.message.is_empty() {
             Line::from(self.message.clone())
-        };
-        let footer = vec![
-            primary,
+        } else {
             Line::from(Span::styled(
-                "Up/Down section   PgUp/PgDn scroll   ? help   Ctrl+C quit",
-                Style::default().fg(Color::DarkGray),
-            )),
-        ];
+                if self.focus == Focus::Sections {
+                    "Focus: sections. Up/Down picks a section, Enter opens it.".to_string()
+                } else {
+                    "Focus: controls. Up/Down picks a row, Left/Right changes it.".to_string()
+                },
+                Style::default().fg(Color::Gray),
+            ))
+        };
+        let footer = if self.show_help || self.show_existing || self.confirm.is_some() {
+            vec![
+                primary,
+                Line::from(Span::styled(
+                    self.context_help(),
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ]
+        } else {
+            let pane_keys = if self.focus == Focus::Sections {
+                "Tab to controls   Up/Down section   Enter open"
+            } else {
+                "Tab to sections   Up/Down row   Left/Right change   Enter use"
+            };
+            let scroll_keys = if self.focus == Focus::Sections {
+                "PgUp/PgDn or wheel scroll   F1 help   q quit"
+            } else {
+                "PgUp/PgDn or wheel scroll   F1 help   Esc back   q quit"
+            };
+            vec![
+                primary,
+                Line::from(Span::styled(pane_keys, Style::default().fg(Color::Gray))),
+                Line::from(Span::styled(
+                    scroll_keys,
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ]
+        };
         frame.render_widget(
             Paragraph::new(footer).block(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
-                    .title(" message / keys "),
+                    .title(Span::styled(" Keys ", Style::default().fg(Color::DarkGray))),
             ),
             chunks[2],
         );
@@ -942,20 +1425,6 @@ impl App {
                     "pastes. Without it the shortcut does nothing. It starts at login if",
                 ));
                 lines.push(dim("you turned that on, and runs until you stop it."));
-                lines.push(Line::from(""));
-                lines.push(Line::from(vec![
-                    Span::styled("Start at login  ", Style::default().fg(Color::DarkGray)),
-                    if service::autostart_enabled() {
-                        Span::styled("● on", Style::default().fg(Color::Green))
-                    } else {
-                        Span::styled("○ off", Style::default().fg(Color::Yellow))
-                    },
-                ]));
-                lines.push(Line::from(""));
-                lines.push(plain("Quick actions"));
-                lines.push(plain("  s   start the service now"));
-                lines.push(plain("  x   stop the service now"));
-                lines.push(plain("  a   toggle start at login"));
                 lines.push(Line::from(""));
                 lines.push(plain("Commands"));
                 lines.push(plain("  verbaq start    start now"));
@@ -1056,7 +1525,8 @@ impl App {
                         ),
                     ]));
                 }
-                lines.push(dim("Enter: level meter.  t: 3 second test."));
+                lines.push(Line::from(""));
+                lines.push(dim("Enter on Microphone moves to the next device."));
             }
             2 => {
                 lines.push(Line::from(vec![Span::styled(
@@ -1132,7 +1602,7 @@ impl App {
                         Span::raw(format!("  {pct:>3}%")),
                     ]));
                 } else {
-                    lines.push(dim("Enter: install or select.  d: delete."));
+                    lines.push(dim("Enter on Model moves to the next model."));
                 }
             }
             3 => {
@@ -1145,21 +1615,13 @@ impl App {
                 ));
                 lines.push(dim("it any time from this screen."));
                 lines.push(Line::from(""));
+                lines.push(rule());
                 lines.push(plain(format!("Current:  {}", self.cfg.hotkey)));
-                lines.push(plain(format!(
-                    "Mode:     {}   (h to change)",
-                    if self.cfg.hold_to_talk {
-                        "hold to talk"
-                    } else {
-                        "press to start, press to stop"
-                    }
-                )));
                 lines.push(dim(format!(
                     "Checked {} shortcuts on this system.",
                     self.existing.len()
                 )));
                 lines.push(Line::from(""));
-                lines.push(rule());
                 lines.push(plain("Suggestions, easy with the left hand:"));
 
                 if let Some((label, _)) = &self.pending_confirm {
@@ -1170,7 +1632,7 @@ impl App {
                             .fg(Color::Cyan)
                             .add_modifier(Modifier::BOLD),
                     )));
-                    lines.push(dim("Enter: use it.  Esc: discard.  c: try again."));
+                    lines.push(dim("Enter: use it.  Esc: discard."));
                     return lines;
                 }
 
@@ -1203,10 +1665,7 @@ impl App {
                     lines.push(dim(format!("     {}", suggestion.why)));
                 }
                 lines.push(Line::from(""));
-                lines.push(dim(
-                    "Enter: use highlighted.  1-6: pick directly.  c: record custom.",
-                ));
-                lines.push(dim("e: list every shortcut found.  x: clear."));
+                lines.push(dim("Left/Right changes the suggestion. Enter uses it."));
                 if !self.keyboard_permission {
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
@@ -1217,7 +1676,6 @@ impl App {
                 }
             }
             4 => {
-                lines.push(plain("Sound is the only feedback"));
                 lines.push(dim(
                     "VerbaQ does not use notifications. They can be hidden by fullscreen",
                 ));
@@ -1225,21 +1683,24 @@ impl App {
                     "apps or Do Not Disturb, which made them unreliable. Sounds always work.",
                 ));
                 lines.push(Line::from(""));
-                lines.push(plain("Start       rising tick"));
-                lines.push(plain("Release     short click, transcription has begun"));
+                lines.push(plain("Cues"));
+                lines.push(plain("Start       short confirmation"));
                 lines.push(plain(
-                    "Busy        very soft low tick, the shortcut was ignored",
+                    "Release     lower confirmation, transcription has begun",
                 ));
+                lines.push(plain("Busy        quiet tap, the shortcut was ignored"));
                 lines.push(plain(
-                    "Problem     two low beeps, then the text is on the clipboard",
+                    "Problem     soft alert, then the text is on the clipboard",
                 ));
                 lines.push(Line::from(""));
-                lines.push(plain(format!(
-                    "Short sounds: {}   (s)",
-                    on_off(self.cfg.sound)
-                )));
-                lines.push(Line::from(""));
-                lines.push(dim("t: play a test sound."));
+                if !self.cfg.output.is_empty() && self.output_idx == 0 {
+                    lines.push(Line::from(Span::styled(
+                        "Saved output is unavailable. The system default is used.",
+                        Style::default().fg(Color::Yellow),
+                    )));
+                    lines.push(Line::from(""));
+                }
+                lines.push(dim("The service picks up the change within 2 seconds."));
                 lines.push(Line::from(""));
                 lines.push(dim(format!(
                     "Player: {}",
@@ -1256,10 +1717,7 @@ impl App {
                 ));
                 lines.push(dim("and every keyboard layout work the same way."));
                 lines.push(Line::from(""));
-                lines.push(plain(format!("Method: {}", insert_title(&self.cfg))));
                 lines.push(dim(insert_explanation(&self.cfg)));
-                lines.push(Line::from(""));
-                lines.push(dim("p: switch method.  Enter: check clipboard and typing."));
                 lines.push(Line::from(""));
                 lines.push(dim(
                     "If neither method works in an app, the text stays on the clipboard.",
@@ -1275,10 +1733,6 @@ impl App {
                 ));
                 lines.push(dim("It stays on this machine and is never uploaded."));
                 lines.push(Line::from(""));
-                lines.push(plain(format!(
-                    "Keep history: {}   (h)",
-                    on_off(self.cfg.history)
-                )));
                 lines.push(plain(format!(
                     "Limit:        {} transcripts",
                     self.cfg.history_limit
@@ -1297,17 +1751,13 @@ impl App {
                         lines.push(plain(format!("  {line}")));
                     }
                 }
-                lines.push(Line::from(""));
-                lines.push(dim("c: clear history.  r: reload."));
             }
             _ => {
                 lines.push(plain("Checks every piece VerbaQ needs"));
                 lines.push(dim("Microphone, typing permission, shortcut, sound,"));
                 lines.push(dim("clipboard, the background service and the model file."));
                 lines.push(Line::from(""));
-                if self.health.is_empty() {
-                    lines.push(dim("Enter: run the check."));
-                } else {
+                if !self.health.is_empty() {
                     for (ok, label, detail) in &self.health {
                         lines.push(Line::from(vec![
                             Span::styled(
@@ -1323,8 +1773,6 @@ impl App {
                             Span::raw(detail.replace('\n', " ")),
                         ]));
                     }
-                    lines.push(Line::from(""));
-                    lines.push(dim("Enter: run again."));
                 }
             }
         }
@@ -1370,36 +1818,32 @@ fn confirmation_text(action: Confirm) -> String {
 fn help_body() -> Vec<Line<'static>> {
     vec![
         plain("Moving around"),
-        plain("  Up / Down or Tab       next section"),
-        plain("  Left / Right           choose within a section"),
-        plain("  Enter                  use the highlighted choice"),
-        plain("  PgUp / PgDn            scroll a long section"),
-        plain("  ?                      open or close this help"),
-        plain("  Ctrl+C or q            quit"),
+        plain("  Tab / Shift+Tab        switch between Sections and Controls"),
+        plain("  1 to 8                 open a section"),
+        plain("  Up / Down              move in the focused pane"),
+        plain("  Left / Right           change the selected control"),
+        plain("  Enter or Space         open a section or use the selected control"),
+        plain("  PgUp / PgDn            scroll the details"),
+        plain("  Mouse wheel            scroll the details"),
+        plain("  Home / End             top or bottom of the details"),
+        plain("  F1                     open or close this help"),
+        plain("  Esc                    back to Sections"),
+        plain("  q or Ctrl+C            quit"),
         Line::from(""),
-        plain("Service"),
-        plain("  s start   x stop   a start at login   Enter refresh"),
+        plain("How it works"),
+        plain("  The cyan border shows which pane has focus. The Controls panel"),
+        plain("  lists every setting on the screen. The selected row starts with >."),
+        plain("  A scrollbar appears when the details are longer than the pane."),
         Line::from(""),
-        plain("Microphone"),
-        plain("  Left/Right device   Enter level meter   t 3 second test"),
-        Line::from(""),
-        plain("Voice model"),
-        plain("  Left/Right model   Enter select or download   d delete"),
-        Line::from(""),
-        plain("Shortcut"),
-        plain("  Left/Right suggestion   Enter choose   c custom   e list   h mode"),
-        Line::from(""),
-        plain("Sound"),
-        plain("  s on/off   t test"),
-        Line::from(""),
-        plain("Text insertion"),
-        plain("  p switch method   Enter check clipboard and typing"),
-        Line::from(""),
-        plain("History"),
-        plain("  h on/off   c clear   r reload"),
-        Line::from(""),
-        plain("Health"),
-        plain("  Enter run the check"),
+        plain("Sections"),
+        plain("  Service          start, stop, start at login"),
+        plain("  Microphone       device, level meter, test"),
+        plain("  Voice model      install, select, delete"),
+        plain("  Shortcut         suggestion, mode, custom capture, list, clear"),
+        plain("  Sound            on or off, set, output, test"),
+        plain("  Text insertion   method and live check"),
+        plain("  History          keep, clear, reload"),
+        plain("  Health           run the check"),
     ]
 }
 
@@ -1464,7 +1908,7 @@ pub fn run() -> Result<()> {
 
     enable_raw_mode()?;
     let mut out = stdout();
-    execute!(out, EnterAlternateScreen)?;
+    execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
     let mut app = App::new();
@@ -1474,24 +1918,32 @@ pub fn run() -> Result<()> {
             app.tick();
             terminal.draw(|frame| app.draw(frame))?;
             if event::poll(Duration::from_millis(150))? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind != KeyEventKind::Press {
-                        continue;
+                match event::read()? {
+                    Event::Key(key) => {
+                        if key.kind != KeyEventKind::Press {
+                            continue;
+                        }
+                        if key.modifiers.contains(KeyModifiers::CONTROL)
+                            && key.code == KeyCode::Char('c')
+                        {
+                            break;
+                        }
+                        if app.on_key(key.code)? {
+                            break;
+                        }
+                        if app.capture_requested {
+                            app.capture_requested = false;
+                            terminal.draw(|frame| app.draw(frame))?;
+                            let result = hotkey::capture();
+                            app.apply_capture(result);
+                        }
                     }
-                    if key.modifiers.contains(KeyModifiers::CONTROL)
-                        && key.code == KeyCode::Char('c')
-                    {
-                        break;
-                    }
-                    if app.on_key(key.code)? {
-                        break;
-                    }
-                    if app.capture_requested {
-                        app.capture_requested = false;
-                        terminal.draw(|frame| app.draw(frame))?;
-                        let result = hotkey::capture();
-                        app.apply_capture(result);
-                    }
+                    Event::Mouse(mouse) => match mouse.kind {
+                        MouseEventKind::ScrollUp => app.scroll_by(-3),
+                        MouseEventKind::ScrollDown => app.scroll_by(3),
+                        _ => {}
+                    },
+                    _ => {}
                 }
             }
         }
@@ -1499,7 +1951,11 @@ pub fn run() -> Result<()> {
     })();
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
     terminal.show_cursor()?;
     app.stop_meter();
     result

@@ -46,17 +46,17 @@ shortcut and uninstall.
 
 Commit subject: `VerbaQ <version>: <summary>`.
 
-Example: `VerbaQ 1.2: fix sound playback`.
+Example: `VerbaQ 1.3: softer cues and sound output`.
 
 Do not commit, tag, push or publish until the owner confirms.
 
-Tag format: `v<version>`, for example `v1.2`.
+Tag format: `v<version>`, for example `v1.3`.
 
 ## GitHub release
 
 - Repository: `TTP-VerbaQ`.
 - Upload the deb, rpm, Arch package, tarball and `SHA256SUMS`.
-- Use the version as the release title: `VerbaQ 1.2`.
+- Use the version as the release title: `VerbaQ 1.3`.
 - Release notes come from `CHANGELOG.md`.
 - Keep only the latest package set in the repository. The full history lives in
   `/home/danuja/TacTalaPaca/TTP-pkgs/` after owner approval.

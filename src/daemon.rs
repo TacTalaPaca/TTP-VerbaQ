@@ -48,7 +48,7 @@ fn say(message: impl AsRef<str>) {
 
 fn cue(cfg: &Config, cue: Cue) {
     if cfg.sound {
-        feedback::play_async(cue);
+        feedback::play_async(cue, cfg.output_option(), &cfg.sound_set);
     }
 }
 
@@ -337,6 +337,8 @@ fn start_recording(
         cue(cfg, Cue::Error);
         return;
     }
+    // The cue starts before the microphone opens, so feedback is immediate.
+    cue(cfg, Cue::Start);
     match Recorder::start(cfg.mic_option()) {
         Ok(rec) => {
             *recorder = Some(rec);
@@ -344,7 +346,6 @@ fn start_recording(
                 started: Instant::now(),
             };
             ipc::reset_status(status, "listening", None);
-            cue(cfg, Cue::Start);
             say("listening");
             logln!("recording started");
         }
@@ -370,10 +371,11 @@ fn finish_recording(
         *state = State::Idle;
         return;
     };
+    // The cue plays while the samples are stopped and processed.
+    cue(cfg, Cue::Stop);
     let (samples, rate) = rec.stop();
     let samples = audio::resample_to_target(&samples, rate);
     let trimmed = audio::trim_silence(&samples, audio::TARGET_RATE);
-    cue(cfg, Cue::Stop);
     say("transcribing");
     logln!(
         "recording stopped: {:.1} s captured, {:.1} s after trimming",
@@ -469,8 +471,8 @@ fn apply_result(
                 Ok(InsertResult::Blocked) => {
                     ipc::reset_status(status, "idle", Some(&text));
                     cue(cfg, Cue::Error);
-                    say("clipboard holds non-text data, text not inserted");
-                    logln!("clipboard holds non-text data, text not inserted");
+                    say("could not save the current clipboard, text not inserted");
+                    logln!("could not save the current clipboard, text not inserted");
                 }
                 Err(error) => {
                     let copied = inject::copy_only(&text);

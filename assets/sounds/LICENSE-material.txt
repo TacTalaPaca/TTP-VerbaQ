@@ -1,0 +1,9 @@
+Material sound resources
+Copyright Google
+Source: https://m2.material.io/design/sound/sound-resources.html
+License: Creative Commons Attribution 4.0
+https://creativecommons.org/licenses/by/4.0/legalcode
+
+The files in material/ and minimal/ are adapted from the Material sound
+resources. They were converted to 48 kHz stereo WAV, level adjusted, given a
+short near-silent lead-in and fades, and split into the VerbaQ cues.

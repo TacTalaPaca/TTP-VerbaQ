@@ -7,7 +7,7 @@ Everything runs on this machine. No account, no cloud, no network after the
 model download. There is no window, tray icon or notification. A few short
 sounds confirm what is happening, and the settings screen lives in the terminal.
 
-- Version: 1.2
+- Version: 1.3
 - Licence: PolyForm Noncommercial 1.0.0
 - Engine: whisper.cpp through `whisper-rs`
 - Repository: `TTP-VerbaQ`
@@ -39,19 +39,19 @@ sounds confirm what is happening, and the settings screen lives in the terminal.
 Arch and derivatives:
 
 ```sh
-sudo pacman -U verbaq-1.2-1-x86_64.pkg.tar.zst
+sudo pacman -U verbaq-1.3-1-x86_64.pkg.tar.zst
 ```
 
 Debian and Ubuntu:
 
 ```sh
-sudo apt install ./verbaq_1.2_amd64.deb
+sudo apt install ./verbaq_1.3_amd64.deb
 ```
 
 Fedora and other RPM systems:
 
 ```sh
-sudo dnf install ./verbaq-1.2-1.x86_64.rpm
+sudo dnf install ./verbaq-1.3-1.x86_64.rpm
 ```
 
 The package installs the binary, a menu entry, icons, one udev rule and one
@@ -99,9 +99,11 @@ Press the shortcut, speak, release.
 - Hold to talk: keep the key down while speaking. Default.
 - Press to start, press again to stop: hands free.
 
-A rising tick means recording started. A short click means it stopped and
-transcription began. Two low beeps mean a problem, and the text is left on the
-clipboard when possible.
+A short confirmation means recording started. A lower confirmation means it
+stopped and transcription began. A soft alert means a problem, and the text is
+left on the clipboard when possible. Sounds play on the chosen output, or the
+system default, and use the chosen set. Material is the default. Minimal is a
+shorter alternative. Both are switched in `verbaq tui`.
 
 ## Shortcut
 
@@ -160,12 +162,17 @@ verbaq tui
 - Microphone: device list, live level meter, three second test
 - Voice model: install, select, delete, download progress
 - Shortcut: mode, suggestions, custom capture, full desktop shortcut list
-- Sound: what each cue means, on or off, test
+- Sound: what each cue means, on or off, set, output device, test
 - Text insertion: paste method and a live check
 - History: on or off, recent entries, clear
 - Health: every dependency with a plain result
 
-Press `?` for the key map. PgUp and PgDn scroll long sections.
+The settings screen has two panes. `Tab` switches between the section list and
+the controls. `Up` and `Down` move in the focused pane. `Left` and `Right`
+change the selected control. `Enter` or `Space` opens a section or uses a
+control. The mouse wheel, `PgUp`/`PgDn`, and `Home`/`End` scroll the details.
+`F1` opens the full key map, `Esc` returns to the section list, and `q` quits.
+The cyan border and the `Focus` label in the header show which pane has focus.
 
 ## History
 
@@ -184,14 +191,14 @@ clipboard.
 
 - `Shift+Insert` is the default. It works in terminals and normal apps.
 - `Ctrl+V` is the alternative.
-- Non-text clipboard content is not overwritten. In that case the text is not
-  inserted, and the history keeps it when enabled.
+- Non-text clipboard content is saved and restored around the paste. If the
+  content cannot be saved, the text is not inserted and history keeps it.
 - If pasting fails, the text stays on the clipboard.
 
 ## Reliability and limits
 
 - One recording or transcription at a time.
-- Busy presses are ignored with a soft tick.
+- Busy presses are ignored with a quiet tap.
 - A lost key release stops recording after two minutes.
 - A hung transcription times out after three minutes and returns to idle.
 - A disconnected microphone stops the recording with an error.
@@ -259,7 +266,7 @@ cargo test --release -- --ignored   # real uinput and clipboard
 
 ## Release
 
-See [RELEASE.md](RELEASE.md). Version 1.1. Commit subjects use
+See [RELEASE.md](RELEASE.md). Commit subjects use
 `VerbaQ <version>: <summary>`. No commit, tag, push or public release without
 owner confirmation.
 
@@ -268,6 +275,9 @@ owner confirmation.
 PolyForm Noncommercial 1.0.0. See [LICENSE](LICENSE).
 
 Whisper models and whisper.cpp are MIT licensed.
+
+Sound cues in `assets/sounds` are adapted from Google's Material sound
+resources, licensed CC BY 4.0. See `assets/sounds/LICENSE-material.txt`.
 
 ## Credits
 

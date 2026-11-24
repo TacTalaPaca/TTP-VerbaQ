@@ -123,13 +123,45 @@ pub fn run(verbose_paste: bool) -> Vec<Check> {
         },
     });
 
+    let outputs = feedback::output_devices();
+    let missing_output = cfg
+        .output_option()
+        .filter(|name| !outputs.is_empty() && !outputs.iter().any(|output| output.name == *name));
+    let output_label = cfg.output_option().and_then(|name| {
+        outputs
+            .iter()
+            .find(|output| output.name == name)
+            .map(|output| {
+                if output.description.is_empty() {
+                    output.name.clone()
+                } else {
+                    output.description.clone()
+                }
+            })
+    });
+    let set_ok = feedback::sound_available(&cfg.sound_set);
+    let set_label = feedback::set_label(&cfg.sound_set);
+    let detail = if !set_ok {
+        format!("{set_label} sound files are missing. Reinstall verbaq.")
+    } else if let Some(name) = missing_output {
+        format!("output {name} is gone. Pick another in `verbaq tui`.")
+    } else if feedback::player().is_none() {
+        "no sound player. Install pipewire or pulseaudio.".into()
+    } else if !cfg.output.is_empty() {
+        format!(
+            "{set_label} set on {}, this is the only feedback",
+            output_label.as_deref().unwrap_or(&cfg.output)
+        )
+    } else {
+        format!(
+            "{set_label} set on the system default with {}, this is the only feedback",
+            feedback::player().unwrap_or("no player")
+        )
+    };
     checks.push(Check {
-        ok: feedback::player().is_some(),
+        ok: feedback::player().is_some() && set_ok && missing_output.is_none(),
         label: "Sound".into(),
-        detail: match feedback::player() {
-            Some(player) => format!("{player} available, this is the only feedback"),
-            None => "no sound player. Install pipewire or pulseaudio.".into(),
-        },
+        detail,
     });
 
     checks.push(Check {
