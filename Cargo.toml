@@ -1,6 +1,6 @@
 [package]
 name = "verbaq"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 rust-version = "1.88"
 description = "Local dictation for Linux. Press a key, speak, text appears."

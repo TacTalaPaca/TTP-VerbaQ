@@ -7,7 +7,7 @@ Everything runs on this machine. No account, no cloud, no network after the
 model download. There is no window, tray icon or notification. A few short
 sounds confirm what is happening, and the settings screen lives in the terminal.
 
-- Version: 1.1
+- Version: 1.2
 - Licence: PolyForm Noncommercial 1.0.0
 - Engine: whisper.cpp through `whisper-rs`
 - Repository: `TTP-VerbaQ`
@@ -39,19 +39,19 @@ sounds confirm what is happening, and the settings screen lives in the terminal.
 Arch and derivatives:
 
 ```sh
-sudo pacman -U verbaq-1.1-1-x86_64.pkg.tar.zst
+sudo pacman -U verbaq-1.2-1-x86_64.pkg.tar.zst
 ```
 
 Debian and Ubuntu:
 
 ```sh
-sudo apt install ./verbaq_1.1_amd64.deb
+sudo apt install ./verbaq_1.2_amd64.deb
 ```
 
 Fedora and other RPM systems:
 
 ```sh
-sudo dnf install ./verbaq-1.1-1.x86_64.rpm
+sudo dnf install ./verbaq-1.2-1.x86_64.rpm
 ```
 
 The package installs the binary, a menu entry, icons, one udev rule and one

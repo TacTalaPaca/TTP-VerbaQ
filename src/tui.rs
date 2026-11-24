@@ -110,8 +110,6 @@ fn rule() -> Line<'static> {
     ))
 }
 
-const GLYPHS: [&str; 8] = ["●", "◉", "◆", "⌨", "♪", "↵", "≡", "✔"];
-
 impl App {
     fn new() -> Self {
         let cfg = Config::load().unwrap_or_default();
@@ -796,22 +794,15 @@ impl App {
             .iter()
             .enumerate()
             .map(|(index, name)| {
-                let glyph = GLYPHS.get(index).copied().unwrap_or("·");
                 if index == self.section {
-                    Line::from(vec![
-                        Span::styled("▸ ", Style::default().fg(Color::Cyan)),
-                        Span::styled(
-                            format!("{glyph} {name}"),
-                            Style::default()
-                                .fg(Color::Cyan)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                    ])
+                    Line::from(Span::styled(
+                        format!("> {name}"),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ))
                 } else {
-                    Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(format!("{glyph} {name}"), Style::default().fg(Color::Gray)),
-                    ])
+                    Line::from(format!("  {name}"))
                 }
             })
             .collect();
@@ -1000,15 +991,12 @@ impl App {
                 ]));
             }
             1 => {
-                lines.push(Line::from(vec![
-                    Span::styled("◉ ", Style::default().fg(Color::Cyan)),
-                    Span::styled(
-                        "Microphone",
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]));
+                lines.push(Line::from(vec![Span::styled(
+                    "Microphone",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )]));
                 lines.push(dim("VerbaQ records only while the shortcut is held."));
                 lines.push(dim(
                     "Pick the device that hears you best. The default is usually right.",
@@ -1023,7 +1011,7 @@ impl App {
                     for (index, name) in self.devices.iter().enumerate() {
                         let selected = index == self.device_idx;
                         lines.push(Line::from(vec![
-                            Span::raw(if selected { "▸ " } else { "  " }),
+                            Span::raw(if selected { "> " } else { "  " }),
                             Span::styled(
                                 if selected { "● " } else { "○ " },
                                 Style::default().fg(if selected {
@@ -1071,15 +1059,12 @@ impl App {
                 lines.push(dim("Enter: level meter.  t: 3 second test."));
             }
             2 => {
-                lines.push(Line::from(vec![
-                    Span::styled("◆ ", Style::default().fg(Color::Cyan)),
-                    Span::styled(
-                        "Voice model",
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]));
+                lines.push(Line::from(vec![Span::styled(
+                    "Voice model",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )]));
                 lines.push(dim(
                     "Smaller is faster. Larger is more accurate on harder speech.",
                 ));
@@ -1103,7 +1088,7 @@ impl App {
                         ("○", "not installed", Color::DarkGray)
                     };
                     let mut spans = vec![
-                        Span::raw(if selected { "▸ " } else { "  " }),
+                        Span::raw(if selected { "> " } else { "  " }),
                         Span::styled(dot, Style::default().fg(color)),
                         Span::raw(" "),
                         Span::styled(
@@ -1194,7 +1179,7 @@ impl App {
                     let taken = shortcuts::taken_by_in(&self.existing, suggestion.display);
                     let mut spans = vec![Span::raw(format!(
                         "{} {}. ",
-                        if selected { "▸" } else { " " },
+                        if selected { ">" } else { " " },
                         i + 1
                     ))];
                     spans.push(Span::styled(

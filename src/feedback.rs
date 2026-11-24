@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -20,6 +20,7 @@ pub enum Cue {
 }
 
 static LAST_PLAYED: AtomicU64 = AtomicU64::new(0);
+static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Play a cue on a background thread. Rapid repeats are dropped so a stuck
 /// shortcut cannot produce a machine-gun of sounds.
@@ -56,100 +57,87 @@ fn tone(out: &mut Vec<i16>, freq: f32, ms: u32, gain: f32, sweep_to: Option<f32>
 fn synth(cue: Cue) -> Vec<i16> {
     let mut out: Vec<i16> = Vec::new();
     match cue {
-        Cue::Start => tone(&mut out, 660.0, 70, 0.16, Some(990.0)),
-        Cue::Stop => tone(&mut out, 880.0, 45, 0.12, None),
-        Cue::Busy => tone(&mut out, 240.0, 40, 0.08, None),
+        Cue::Start => tone(&mut out, 660.0, 80, 0.24, Some(990.0)),
+        Cue::Stop => tone(&mut out, 880.0, 60, 0.20, None),
+        Cue::Busy => tone(&mut out, 240.0, 45, 0.12, None),
         Cue::Error => {
-            tone(&mut out, 300.0, 70, 0.15, None);
+            tone(&mut out, 300.0, 90, 0.22, None);
             out.resize(out.len() + 2880, 0);
-            tone(&mut out, 300.0, 70, 0.15, None);
+            tone(&mut out, 300.0, 90, 0.22, None);
         }
-        Cue::Test => tone(&mut out, 700.0, 90, 0.14, Some(1100.0)),
+        Cue::Test => tone(&mut out, 660.0, 120, 0.22, Some(1100.0)),
     }
     out
 }
 
-fn play_with_pw_cat(samples: &[i16]) -> bool {
-    let Ok(mut child) = Command::new("pw-cat")
-        .args([
-            "--playback",
-            "--format",
-            "s16",
-            "--rate",
-            "48000",
-            "--channels",
-            "1",
-            "-",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
-        return false;
-    };
-    if let Some(mut stdin) = child.stdin.take() {
-        let mut bytes = Vec::with_capacity(samples.len() * 2);
-        for sample in samples {
-            bytes.extend_from_slice(&sample.to_le_bytes());
-        }
-        if stdin.write_all(&bytes).is_err() {
-            return false;
-        }
-    }
-    matches!(
-        util::wait_for_process(&mut child, Duration::from_secs(2)),
-        Ok(status) if status.success()
-    )
+fn cue_path() -> PathBuf {
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    dir.join(format!("verbaq-cue-{}-{sequence}.wav", std::process::id()))
 }
 
-fn play_with_paplay(samples: &[i16]) -> bool {
-    let dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
-    let path = std::path::Path::new(&dir).join("verbaq-cue.wav");
+fn write_wav(samples: &[i16]) -> Option<PathBuf> {
+    let path = cue_path();
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate: 48_000,
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
     };
-    let Ok(mut writer) = hound::WavWriter::create(&path, spec) else {
-        return false;
-    };
+    let mut writer = hound::WavWriter::create(&path, spec).ok()?;
     for sample in samples {
         if writer.write_sample(*sample).is_err() {
             let _ = std::fs::remove_file(&path);
-            return false;
+            return None;
         }
     }
     if writer.finalize().is_err() {
         let _ = std::fs::remove_file(&path);
-        return false;
+        return None;
     }
-    let ok = match Command::new("paplay")
-        .arg(&path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(mut child) => util::wait_for_process(&mut child, Duration::from_secs(2))
-            .map(|status| status.success())
-            .unwrap_or(false),
-        Err(_) => false,
-    };
-    let _ = std::fs::remove_file(&path);
-    ok
+    Some(path)
+}
+
+/// Try the native PipeWire players and PulseAudio in turn. Each one gets a
+/// short timeout so a broken audio server cannot leave a thread behind.
+fn play_file(path: &Path) -> bool {
+    for program in ["pw-play", "pw-cat", "paplay"] {
+        let mut command = Command::new(program);
+        if program == "pw-cat" {
+            command.arg("--playback");
+        }
+        command
+            .arg(path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let Ok(mut child) = command.spawn() else {
+            continue;
+        };
+        if matches!(
+            util::wait_for_process(&mut child, Duration::from_secs(3)),
+            Ok(status) if status.success()
+        ) {
+            return true;
+        }
+    }
+    false
 }
 
 fn play_blocking(cue: Cue) {
     let samples = synth(cue);
-    if play_with_pw_cat(&samples) {
+    let Some(path) = write_wav(&samples) else {
         return;
-    }
-    let _ = play_with_paplay(&samples);
+    };
+    let _ = play_file(&path);
+    let _ = std::fs::remove_file(&path);
 }
 
 pub fn player() -> Option<&'static str> {
-    if util::which("pw-cat").is_some() {
+    if util::which("pw-play").is_some() {
+        Some("pw-play")
+    } else if util::which("pw-cat").is_some() {
         Some("pw-cat")
     } else if util::which("paplay").is_some() {
         Some("paplay")
@@ -161,4 +149,29 @@ pub fn player() -> Option<&'static str> {
 /// Play a cue and wait for it, used by the setup wizard and tests.
 pub fn play_now(cue: Cue) {
     play_blocking(cue);
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[ignore = "plays a real sound on the current audio server"]
+    fn playback_path_succeeds() {
+        let samples = super::synth(super::Cue::Test);
+        let path = super::write_wav(&samples).expect("write cue wav");
+        assert!(super::play_file(&path), "no audio player accepted the cue");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn cues_produce_audio() {
+        for cue in [
+            super::Cue::Start,
+            super::Cue::Stop,
+            super::Cue::Busy,
+            super::Cue::Error,
+            super::Cue::Test,
+        ] {
+            assert!(!super::synth(cue).is_empty());
+        }
+    }
 }

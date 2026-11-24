@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2
+
+- Fixed sound playback. The cue is written as a WAV file and played with
+  `pw-play`, then `pw-cat`, then `paplay`. Raw PCM on stdin is no longer used.
+- Raised cue volume and length so the start, stop and error sounds are audible.
+- Removed the decorative glyphs from the settings menu and list rows.
+- Bumped the version to 1.2.
+
 ## 1.1
 
 - First release.
