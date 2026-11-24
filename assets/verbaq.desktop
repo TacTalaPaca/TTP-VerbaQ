@@ -1,0 +1,20 @@
+[Desktop Entry]
+Type=Application
+Name=VerbaQ
+GenericName=Local dictation
+Comment=Offline speech to text. Press a key, speak, and the text appears where your cursor is.
+Exec=verbaq tui
+Icon=verbaq-dictation
+Terminal=true
+Categories=Utility;Accessibility;
+Keywords=dictation;speech;voice;transcription;offline;whisper;
+StartupNotify=false
+Actions=StartService;StopService;
+
+[Desktop Action StartService]
+Name=Start the background service
+Exec=verbaq start
+
+[Desktop Action StopService]
+Name=Stop the background service
+Exec=verbaq stop

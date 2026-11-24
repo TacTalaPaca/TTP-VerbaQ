@@ -1,0 +1,81 @@
+name: verbaq
+arch: ${ARCH}
+platform: linux
+version: "${VERSION}"
+version_schema: none
+section: utils
+priority: optional
+maintainer: TacTalaPaca <contact@tactalapaca.com>
+description: |
+  Local dictation for Linux. Press a key, speak, release, and the text is
+  typed into the focused application. Runs entirely offline with a local
+  Whisper model. No window, no account, no network after setup.
+license: PolyForm-Noncommercial-1.0.0
+vendor: TacTalaPaca
+homepage: https://tactalapaca.com
+
+contents:
+  - src: target/release/verbaq
+    dst: /usr/bin/verbaq
+    file_info:
+      mode: 0755
+  - src: assets/verbaq.desktop
+    dst: /usr/share/applications/verbaq.desktop
+  - src: assets/icons/verbaq.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/verbaq-dictation.svg
+  - src: assets/icons/verbaq-16.png
+    dst: /usr/share/icons/hicolor/16x16/apps/verbaq-dictation.png
+  - src: assets/icons/verbaq-24.png
+    dst: /usr/share/icons/hicolor/24x24/apps/verbaq-dictation.png
+  - src: assets/icons/verbaq-32.png
+    dst: /usr/share/icons/hicolor/32x32/apps/verbaq-dictation.png
+  - src: assets/icons/verbaq-48.png
+    dst: /usr/share/icons/hicolor/48x48/apps/verbaq-dictation.png
+  - src: assets/icons/verbaq-64.png
+    dst: /usr/share/icons/hicolor/64x64/apps/verbaq-dictation.png
+  - src: assets/icons/verbaq-128.png
+    dst: /usr/share/icons/hicolor/128x128/apps/verbaq-dictation.png
+  - src: assets/icons/verbaq-256.png
+    dst: /usr/share/icons/hicolor/256x256/apps/verbaq-dictation.png
+  - src: assets/icons/verbaq-512.png
+    dst: /usr/share/icons/hicolor/512x512/apps/verbaq-dictation.png
+  - src: packaging/common/60-verbaq.rules
+    dst: /usr/lib/udev/rules.d/60-verbaq.rules
+  - src: packaging/common/verbaq-modules.conf
+    dst: /usr/lib/modules-load.d/verbaq.conf
+  - src: LICENSE
+    dst: /usr/share/doc/verbaq/LICENSE
+  - src: README.md
+    dst: /usr/share/doc/verbaq/README.md
+  - src: CHANGELOG.md
+    dst: /usr/share/doc/verbaq/CHANGELOG.md
+
+scripts:
+  postinstall: packaging/common/postinstall.sh
+  postremove: packaging/common/postremove.sh
+
+overrides:
+  deb:
+    depends:
+      - libasound2
+      - libc6
+      - libstdc++6
+      - libgcc-s1
+  rpm:
+    depends:
+      - "libasound.so.2()(64bit)"
+      - "libc.so.6()(64bit)"
+      - "libm.so.6()(64bit)"
+      - "libstdc++.so.6()(64bit)"
+      - "libgcc_s.so.1()(64bit)"
+  archlinux:
+    depends:
+      - alsa-lib
+      - glibc
+      - gcc-libs
+
+rpm:
+  group: Applications/Accessibility
+
+archlinux:
+  packager: TacTalaPaca <contact@tactalapaca.com>
